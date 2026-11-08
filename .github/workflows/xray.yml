@@ -1,4 +1,4 @@
-name: Sync Upstream Release to Latest
+name: Sync Upstream Release to Latest（Xray-core）
 
 on:
   schedule:

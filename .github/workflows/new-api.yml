@@ -2,7 +2,7 @@ name: Sync New-API to Latest
 
 on:
   schedule:
-    - cron: '30 */8 * * *'
+    - cron: '30 */7 * * *'
   workflow_dispatch:
 
 jobs:
@@ -17,9 +17,10 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Get upstream release and parse checksum
+      - name: Get upstream release and download binaries
         id: upstream
         run: |
+          set +e
           UPSTREAM_REPO="QuantumNous/new-api"
           
           LATEST_JSON=$(curl -s https://api.github.com/repos/$UPSTREAM_REPO/releases | jq '.[0]')
@@ -28,60 +29,66 @@ jobs:
           echo "tag_name=$TAG_NAME" >> $GITHUB_OUTPUT
           echo "prerelease=$IS_PRERELEASE" >> $GITHUB_OUTPUT
           
-          # 改成 new-api_last_sync_log
           if [ -f new-api_last_sync_log ] && [ "$(cat new-api_last_sync_log)" = "$TAG_NAME" ]; then
             echo "skip=true" >> $GITHUB_OUTPUT
             exit 0
           fi
           echo "$TAG_NAME" > new-api_last_sync_log
           
-          mkdir -p tmp_zip tmp_extract tmp_upload
+          mkdir -p tmp_upload
           
+          # 下载 checksum 文件
           CHECKSUM_LINUX_URL=$(echo $LATEST_JSON | jq -r '.assets[] | select(.name=="checksum-linux.txt") | .browser_download_url')
           CHECKSUM_WIN_URL=$(echo $LATEST_JSON | jq -r '.assets[] | select(.name=="checksum-windows.txt") | .browser_download_url')
+          
+          if [ -z "$CHECKSUM_LINUX_URL" ] || [ -z "$CHECKSUM_WIN_URL" ]; then
+            echo "Error: checksum file not found"
+            exit 1
+          fi
           
           wget -q "$CHECKSUM_LINUX_URL" -O checksum-linux.txt
           wget -q "$CHECKSUM_WIN_URL" -O checksum-windows.txt
           
-          grep -E 'new-api.*(amd64|arm64|aarch64)' checksum-linux.txt | awk '{print $2}' > files_to_download.txt
-          grep -E 'new-api.*(amd64|arm64|aarch64)' checksum-windows.txt | awk '{print $2}' >> files_to_download.txt
+          # 从checksum提取文件名，格式：sha256  new-api-arm64-v1.0.0-rc.49
+          > files_to_download.txt
+          grep -E 'new-api' checksum-linux.txt | awk '{print "linux "$2}' >> files_to_download.txt || true
+          grep -E 'new-api' checksum-windows.txt | awk '{print "windows "$2}' >> files_to_download.txt || true
           
-          while read -r FILENAME; do
-            if [ -z "$FILENAME" ]; then continue; fi
+          if [ ! -s files_to_download.txt ]; then
+            echo "No files found in checksum"
+            exit 0
+          fi
+          
+          # 下载并改名
+          while read -r SYSTEM FILENAME; do
+            [ -z "$FILENAME" ] && continue
             URL=$(echo $LATEST_JSON | jq -r --arg NAME "$FILENAME" '.assets[] | select(.name==$NAME) | .browser_download_url')
-            echo "Downloading $FILENAME"
-            wget -q "$URL" -P tmp_zip/
             
-            if echo "$FILENAME" | grep -q -i "windows"; then
-              SYSTEM="windows"
-            else
-              SYSTEM="linux"
+            if [ -z "$URL" ]; then
+              echo "Warning: $FILENAME not found in assets, skip"
+              continue
             fi
             
+            # 判断架构
             if echo "$FILENAME" | grep -q -E 'arm64|aarch64'; then
               ARCH="arm64"
+              NEW_NAME="new-api-${ARCH}-${SYSTEM}"
             else
               ARCH="amd64"
+              NEW_NAME="new-api-${SYSTEM}"
             fi
             
-            unzip -q tmp_zip/"$FILENAME" -d tmp_extract/"$FILENAME"_dir
-            BIN_PATH=$(find tmp_extract/"$FILENAME"_dir -type f \( -name "new-api" -o -name "new-api.exe" \) | head -n1)
+            [ "$SYSTEM" = "windows" ] && NEW_NAME="${NEW_NAME}.exe"
             
-            if [ -n "$BIN_PATH" ]; then
-              if [ "$ARCH" = "arm64" ]; then
-                NEW_NAME="new-api-${ARCH}-${SYSTEM}"
-              else
-                NEW_NAME="new-api-${SYSTEM}"
-              fi
-              
-              if [ "$SYSTEM" = "windows" ]; then NEW_NAME="${NEW_NAME}.exe"; fi
-              
-              cp "$BIN_PATH" "tmp_upload/$NEW_NAME"
-              echo "Created $NEW_NAME"
-            fi
+            echo "Downloading $FILENAME -> $NEW_NAME"
+            wget -q "$URL" -O "tmp_upload/$NEW_NAME" || continue
+            chmod +x "tmp_upload/$NEW_NAME" 2>/dev/null || true
+            
           done < files_to_download.txt
           
+          echo "Final upload files:"
           ls -la tmp_upload/
+          set -e
 
       - name: Create latest tag if not exist
         if: steps.upstream.outputs.skip != 'true'
@@ -109,9 +116,7 @@ jobs:
           fi
           
           NOTE="Auto synced from new-api \`$TAG_NAME\`"
-          if [ "$IS_PRERELEASE" = "true" ]; then
-            NOTE="$NOTE (Pre-release)"
-          fi
+          [ "$IS_PRERELEASE" = "true" ] && NOTE="$NOTE (Pre-release)"
           NOTE="$NOTE at $(date -u +"%Y-%m-%d %H:%M:%S UTC")"
           
           gh release edit latest \
@@ -120,7 +125,6 @@ jobs:
             --latest=true \
             --prerelease="$IS_PRERELEASE"
           
-          # 这里也改成 new-api_last_sync_log
           git add new-api_last_sync_log
           git config user.name github-actions
           git config user.email github-actions@github.com

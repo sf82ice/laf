@@ -84,8 +84,8 @@ jobs:
           
           # 3. 更新release信息，标记为latest
           gh release edit latest \
-            --title "Cloudflared Latest synced from upstream $TAG_NAME" \
-            --notes "Auto synced from upstream tag: \`$TAG_NAME\` at $(date -u +"%Y-%m-%d %H:%M:%S UTC")" \
+            --title "Latest" \
+            --notes "Cloudflared: Auto synced from upstream tag: \`$TAG_NAME\` at $(date -u +"%Y-%m-%d %H:%M:%S UTC")" \
             --latest=true
           
           # 4. 提交同步记录，防止重复执行

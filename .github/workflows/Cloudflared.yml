@@ -2,30 +2,33 @@ name: Sync Upstream Release to Latest
 
 on:
   schedule:
-    - cron: '*/10 * * * *'
-  workflow_dispatch:
+    - cron: '*/10 * * * *'  # 每10分钟检查一次
+  workflow_dispatch:        # 支持手动触发
 
 jobs:
   sync:
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: write       # 需要写release和push commit
+    
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # 需要拉tag历史
+          fetch-depth: 0    # 需要拉取所有tag
 
-      - name: Get upstream latest release
+      - name: Get upstream latest release and download assets
         id: upstream
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          # 改成你要watch的上游仓库
           UPSTREAM_REPO="cloudflare/cloudflared"
-          LATEST_JSON=$(gh api repos/$UPSTREAM_REPO/releases/latest)
+          
+          # 公开仓库直接curl，不需要token
+          LATEST_JSON=$(curl -s https://api.github.com/repos/$UPSTREAM_REPO/releases/latest)
           TAG_NAME=$(echo $LATEST_JSON | jq -r .tag_name)
           echo "tag_name=$TAG_NAME" >> $GITHUB_OUTPUT
           
+          # 避免重复同步
           if [ -f .last_sync_tag ] && [ "$(cat .last_sync_tag)" = "$TAG_NAME" ]; then
             echo "Upstream tag $TAG_NAME already synced. Skip."
             echo "skip=true" >> $GITHUB_OUTPUT
@@ -33,10 +36,19 @@ jobs:
           fi
           echo "$TAG_NAME" > .last_sync_tag
           
-          # 下载需要的产物到 temp 目录，避免和仓库文件冲突
+          # 下载需要的产物：Linux/Windows + amd64/aarch64/arm64
           mkdir -p tmp_assets
-          echo $LATEST_JSON | jq -r '.assets[] | select(.name | test("linux-amd64|checksums")) | .browser_download_url' | \
-          xargs -n 1 wget -P tmp_assets -q
+          echo $LATEST_JSON | jq -r '
+            .assets[] | 
+            select(
+              (.name | test("(?i)linux|windows")) and 
+              (.name | test("(?i)amd64|aarch64|arm64"))
+            ) | 
+            .browser_download_url
+          ' | xargs -n 1 wget -P tmp_assets -q || true
+          
+          echo "Downloaded files:"
+          ls -la tmp_assets/
 
       - name: Create latest tag if not exist
         if: steps.upstream.outputs.skip != 'true'
@@ -52,27 +64,31 @@ jobs:
       - name: Overwrite upload to latest release
         if: steps.upstream.outputs.skip != 'true'
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}  # 这个token是传到你自己仓库用的
           TAG_NAME: ${{ steps.upstream.outputs.tag_name }}
         run: |
-          # 1. 如果latest这个release不存在就先创建，存在就直接上传
+          # 1. latest release不存在就先创建
           if ! gh release view latest >/dev/null 2>&1; then
             gh release create latest \
               --title "Latest" \
               --notes "Auto synced from upstream" \
-              --latest=false   # 先不标记latest，等传完再说
+              --latest=false
           fi
           
-          # 2. 覆盖上传，同名文件会被替换。--clobber就是关键
-          gh release upload latest tmp_assets/* --clobber
+          # 2. 覆盖上传，--clobber会替换同名文件
+          if [ -n "$(ls -A tmp_assets)" ]; then
+            gh release upload latest tmp_assets/* --clobber
+          else
+            echo "No assets matched, skip upload"
+          fi
           
           # 3. 更新release信息，标记为latest
           gh release edit latest \
             --title "Latest synced from upstream $TAG_NAME" \
-            --notes "Auto synced from upstream tag: $TAG_NAME at $(date -u +"%Y-%m-%d %H:%M:%S UTC")" \
+            --notes "Auto synced from upstream tag: \`$TAG_NAME\` at $(date -u +"%Y-%m-%d %H:%M:%S UTC")" \
             --latest=true
           
-          # 4. 提交同步记录
+          # 4. 提交同步记录，防止重复执行
           git add .last_sync_tag
           git config user.name github-actions
           git config user.email github-actions@github.com

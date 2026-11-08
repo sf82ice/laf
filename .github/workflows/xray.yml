@@ -1,0 +1,129 @@
+name: Sync Upstream Release to Latest
+
+on:
+  schedule:
+    - cron: '*/8 */10 * * *'
+  workflow_dispatch:
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get upstream latest release and download zips
+        id: upstream
+        run: |
+          UPSTREAM_REPO="XTLS/Xray-core"  # 改成你的上游仓库
+          
+          # 用 releases 接口拿所有release，第一个就是最新的含预发布
+          LATEST_JSON=$(curl -s https://api.github.com/repos/$UPSTREAM_REPO/releases | jq '.[0]')
+          TAG_NAME=$(echo $LATEST_JSON | jq -r .tag_name)
+          IS_PRERELEASE=$(echo $LATEST_JSON | jq -r .prerelease)
+          echo "tag_name=$TAG_NAME" >> $GITHUB_OUTPUT
+          echo "prerelease=$IS_PRERELEASE" >> $GITHUB_OUTPUT
+          
+          if [ -f .last_sync_tag ] && [ "$(cat .last_sync_tag)" = "$TAG_NAME" ]; then
+            echo "skip=true" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          echo "$TAG_NAME" > .last_sync_tag
+          
+          mkdir -p tmp_zip tmp_extract tmp_upload
+          
+          # 只下zip，且文件名要包含 linux|windows 和 amd64|64|aarch64|arm64
+          echo $LATEST_JSON | jq -r '
+            .assets[] | 
+            select(
+              (.name | endswith(".zip")) and
+              (.name | test("(?i)linux|windows")) and 
+              (.name | test("(?i)amd64|64|aarch64|arm64"))
+            ) | 
+            [.name, .browser_download_url] | @tsv
+          ' | while IFS=$'\t' read -r NAME URL; do
+            echo "Downloading $NAME"
+            wget -P tmp_zip -q "$URL"
+            
+            # 从文件名解析 系统 和 架构
+            # 格式：软件名-系统-架构.zip
+            BASENAME=${NAME%.zip}
+            SYSTEM=$(echo $BASENAME | awk -F- '{print tolower($(NF-1))}')
+            ARCH=$(echo $BASENAME | awk -F- '{print tolower($NF)}')
+            
+            # 统一架构命名：64 -> amd64, arm64 -> aarch64
+            if [ "$ARCH" = "64" ]; then ARCH="amd64"; fi
+            if [ "$ARCH" = "arm64" ]; then ARCH="aarch64"; fi
+            
+            # 解压
+            unzip -q tmp_zip/"$NAME" -d tmp_extract/"$BASENAME"
+            
+            # 找到xray程序，改名
+            if [ -f tmp_extract/"$BASENAME"/xray ]; then
+              NEW_NAME="xray-${SYSTEM}-${ARCH}"
+              # windows加.exe后缀
+              if [ "$SYSTEM" = "windows" ]; then NEW_NAME="${NEW_NAME}.exe"; fi
+              
+              mv tmp_extract/"$BASENAME"/xray tmp_upload/"$NEW_NAME"
+              echo "Renamed to $NEW_NAME"
+            elif [ -f tmp_extract/"$BASENAME"/xray.exe ]; then
+              NEW_NAME="xray-${SYSTEM}-${ARCH}.exe"
+              mv tmp_extract/"$BASENAME"/xray.exe tmp_upload/"$NEW_NAME"
+              echo "Renamed to $NEW_NAME"
+            else
+              echo "xray not found in $NAME"
+            fi
+          done
+          
+          echo "Files to upload:"
+          ls -la tmp_upload/
+
+      - name: Create latest tag if not exist
+        if: steps.upstream.outputs.skip != 'true'
+        run: |
+          if ! git rev-parse latest >/dev/null 2>&1; then
+            git config user.name github-actions
+            git config user.email github-actions@github.com
+            git tag latest
+            git push origin latest
+          fi
+
+      - name: Overwrite upload to latest release
+        if: steps.upstream.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: ${{ steps.upstream.outputs.tag_name }}
+          IS_PRERELEASE: ${{ steps.upstream.outputs.prerelease }}
+        run: |
+          if ! gh release view latest >/dev/null 2>&1; then
+            gh release create latest --title "Latest" --notes "Auto synced" --latest=false
+          fi
+          
+          if [ -n "$(ls -A tmp_upload)" ]; then
+            gh release upload latest tmp_upload/* --clobber
+          else
+            echo "No xray binary found, skip upload"
+          fi
+          
+          NOTE="Auto synced from upstream tag: \`$TAG_NAME\`"
+          if [ "$IS_PRERELEASE" = "true" ]; then
+            NOTE="$NOTE (Pre-release)"
+          fi
+          NOTE="$NOTE at $(date -u +"%Y-%m-%d %H:%M:%S UTC")"
+          
+          gh release edit latest \
+            --title "Latest synced from upstream $TAG_NAME" \
+            --notes "$NOTE" \
+            --latest=true \
+            --prerelease="$IS_PRERELEASE"
+          
+          git add .last_sync_tag
+          git config user.name github-actions
+          git config user.email github-actions@github.com
+          git commit -m "Sync upstream $TAG_NAME" || true
+          git push

@@ -2,7 +2,7 @@ name: Sync Upstream Release to Latest
 
 on:
   schedule:
-    - cron: '*/8 */10 * * *'
+    - cron: '8 */10 * * *'
   workflow_dispatch:
 
 jobs:

@@ -2,7 +2,7 @@ name: Sync New-API to Latest
 
 on:
   schedule:
-    - cron: '30 */7 * * *'
+    - cron: '18 */10 * * *'
   workflow_dispatch:
 
 jobs:
@@ -37,29 +37,29 @@ jobs:
           
           mkdir -p tmp_upload
           
-          # 下载 checksum 文件
-          CHECKSUM_LINUX_URL=$(echo $LATEST_JSON | jq -r '.assets[] | select(.name=="checksum-linux.txt") | .browser_download_url')
-          CHECKSUM_WIN_URL=$(echo $LATEST_JSON | jq -r '.assets[] | select(.name=="checksum-windows.txt") | .browser_download_url')
+          # 这里改成 checksums-linux.txt 和 checksums-windows.txt
+          CHECKSUM_LINUX_URL=$(echo $LATEST_JSON | jq -r '.assets[] | select(.name=="checksums-linux.txt") | .browser_download_url')
+          CHECKSUM_WIN_URL=$(echo $LATEST_JSON | jq -r '.assets[] | select(.name=="checksums-windows.txt") | .browser_download_url')
           
           if [ -z "$CHECKSUM_LINUX_URL" ] || [ -z "$CHECKSUM_WIN_URL" ]; then
-            echo "Error: checksum file not found"
+            echo "Error: checksums file not found in latest release"
+            echo "Linux URL: $CHECKSUM_LINUX_URL"
+            echo "Windows URL: $CHECKSUM_WIN_URL"
             exit 1
           fi
           
-          wget -q "$CHECKSUM_LINUX_URL" -O checksum-linux.txt
-          wget -q "$CHECKSUM_WIN_URL" -O checksum-windows.txt
+          wget -q "$CHECKSUM_LINUX_URL" -O checksums-linux.txt
+          wget -q "$CHECKSUM_WIN_URL" -O checksums-windows.txt
           
-          # 从checksum提取文件名，格式：sha256  new-api-arm64-v1.0.0-rc.49
           > files_to_download.txt
-          grep -E 'new-api' checksum-linux.txt | awk '{print "linux "$2}' >> files_to_download.txt || true
-          grep -E 'new-api' checksum-windows.txt | awk '{print "windows "$2}' >> files_to_download.txt || true
+          grep -E 'new-api' checksums-linux.txt | awk '{print "linux "$2}' >> files_to_download.txt || true
+          grep -E 'new-api' checksums-windows.txt | awk '{print "windows "$2}' >> files_to_download.txt || true
           
           if [ ! -s files_to_download.txt ]; then
-            echo "No files found in checksum"
+            echo "No files found in checksums"
             exit 0
           fi
           
-          # 下载并改名
           while read -r SYSTEM FILENAME; do
             [ -z "$FILENAME" ] && continue
             URL=$(echo $LATEST_JSON | jq -r --arg NAME "$FILENAME" '.assets[] | select(.name==$NAME) | .browser_download_url')
@@ -69,7 +69,6 @@ jobs:
               continue
             fi
             
-            # 判断架构
             if echo "$FILENAME" | grep -q -E 'arm64|aarch64'; then
               ARCH="arm64"
               NEW_NAME="new-api-${ARCH}-${SYSTEM}"

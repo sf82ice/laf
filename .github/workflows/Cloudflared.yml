@@ -29,12 +29,12 @@ jobs:
           echo "tag_name=$TAG_NAME" >> $GITHUB_OUTPUT
           
           # 避免重复同步
-          if [ -f .cloudflared_last_sync_tag ] && [ "$(cat .last_sync_tag)" = "$TAG_NAME" ]; then
+          if [ -f .cloudflared_last_sync_tag ] && [ "$(cat .cloudflared_last_sync_tag)" = "$TAG_NAME" ]; then
             echo "Upstream tag $TAG_NAME already synced. Skip."
             echo "skip=true" >> $GITHUB_OUTPUT
             exit 0
           fi
-          echo "$TAG_NAME" > .last_sync_tag
+          echo "$TAG_NAME" > .cloudflared_last_sync_tag
           
           # 下载需要的产物：Linux/Windows + amd64/aarch64/arm64
           mkdir -p tmp_assets

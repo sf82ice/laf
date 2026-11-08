@@ -117,7 +117,7 @@ jobs:
           NOTE="$NOTE at $(date -u +"%Y-%m-%d %H:%M:%S UTC")"
           
           gh release edit latest \
-            --title "Latest synced from upstream $TAG_NAME" \
+            --title "Latest" \
             --notes "$NOTE" \
             --latest=true \
             --prerelease="$IS_PRERELEASE"
